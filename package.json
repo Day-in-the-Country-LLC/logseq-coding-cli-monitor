@@ -1,0 +1,33 @@
+{
+  "name": "logseq-coding-cli-monitor",
+  "version": "v0.1.0",
+  "title": "Coding CLI Monitor",
+  "description": "Monitor coding CLIs and notify when they finish or need attention.",
+  "author": "Kristin Day",
+  "main": "index.html",
+  "license": "MIT",
+  "repository": "https://github.com/klday/logseq-coding-cli-monitor.git",
+  "repo": "klday/logseq-coding-cli-monitor",
+  "effect": true,
+  "keywords": [
+    "logseq",
+    "plugin",
+    "codex",
+    "claude",
+    "opencode",
+    "cli-monitor"
+  ],
+  "bin": {
+    "cli-monitor": "helper/cli-monitor.mjs"
+  },
+  "scripts": {
+    "daemon": "node helper/cli-monitor.mjs daemon",
+    "run": "node helper/cli-monitor.mjs run",
+    "status": "node helper/cli-monitor.mjs status"
+  },
+  "logseq": {
+    "id": "logseq-coding-cli-monitor",
+    "title": "Coding CLI Monitor",
+    "icon": "./icon.svg"
+  }
+}
