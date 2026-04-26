@@ -15,7 +15,7 @@ const ATTENTION_RE = /(press enter|continue\?|approve|permission|confirm|y\/n|se
 const WORKING_RE = /\b(working|thinking|analyzing|reading|editing|searching|running tool|running command|applying patch|executing|processing)\b/i;
 const WORKING_IDLE_MS = 12000;
 const ATTENTION_HOLD_MS = 15000;
-const IDLE_ATTENTION_MS = 30000;
+const IDLE_ATTENTION_MS = 15000;
 
 function ensureDirs() {
   fs.mkdirSync(LOG_DIR, { recursive: true });
@@ -139,9 +139,8 @@ function effectiveSessionStatus(session, now = Date.now()) {
   if (session.status === "attention") return "attention";
 
   const lastActivityAt = Math.max(
-    timestampMs(session.lastOutputAt),
-    timestampMs(session.lastWorkingAt),
-    timestampMs(session.updatedAt),
+    timestampMs(session.lastMeaningfulOutputAt),
+    timestampMs(session.lastUserInputAt),
     timestampMs(session.startedAt),
   );
 
@@ -194,7 +193,29 @@ async function daemon() {
 }
 
 function stripControlChars(text) {
-  return text.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
+  return text
+    .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "")
+    .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "")
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
+}
+
+function meaningfulOutputText(text) {
+  return stripControlChars(text)
+    .replace(/\r/g, "\n")
+    .replace(/[•⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]+/g, " ")
+    .replace(/\b(working|thinking)\b/gi, " ")
+    .replace(/\b\d+s\b/g, " ")
+    .replace(/\b(esc to interrupt|background terminal running|tab to queue|context left)\b/gi, " ")
+    .replace(/\/(ps|stop)\b/gi, " ")
+    .replace(/[^A-Za-z0-9\s.,:;!?/@_-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function hasMeaningfulOutput(buffer) {
+  const text = meaningfulOutputText(buffer.toString("utf8"));
+  const words = text.split(/\s+/).filter((word) => /[A-Za-z]{3}/.test(word));
+  return text.length >= 16 && words.length >= 3;
 }
 
 function parseRunArgs(argv) {
@@ -242,6 +263,7 @@ function runWrapped(argv) {
   let lastAttention = 0;
   let lastWorking = 0;
   let lastOutputStateUpdate = 0;
+  let lastMeaningfulOutputStateUpdate = 0;
   let currentStatus = "working";
   const workingIdleTimer = setInterval(() => {
     if (lastWorking && Date.now() - lastWorking > WORKING_IDLE_MS) {
@@ -259,6 +281,14 @@ function runWrapped(argv) {
       lastOutputStateUpdate = now;
       updateSession(id, { lastOutputAt: new Date(now).toISOString() });
     }
+    if (hasMeaningfulOutput(buffer) && now - lastMeaningfulOutputStateUpdate > 2000) {
+      lastMeaningfulOutputStateUpdate = now;
+      currentStatus = "working";
+      updateSession(id, {
+        status: "working",
+        lastMeaningfulOutputAt: new Date(now).toISOString(),
+      });
+    }
     const chunk = stripControlChars(buffer.toString("utf8"));
     if (ATTENTION_RE.test(chunk) && now - lastAttention > 60000) {
       lastAttention = now;
@@ -272,9 +302,8 @@ function runWrapped(argv) {
       if (currentStatus === "attention" && now - lastAttention < ATTENTION_HOLD_MS) {
         return;
       }
-      currentStatus = "working";
       lastWorking = now;
-      updateSession(id, { status: "working", lastWorkingAt: new Date(now).toISOString() });
+      updateSession(id, { lastWorkingAt: new Date(now).toISOString() });
     }
   }
 
