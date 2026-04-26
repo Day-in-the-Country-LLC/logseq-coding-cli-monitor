@@ -6,8 +6,8 @@
   "author": "Kristin Day",
   "main": "index.html",
   "license": "MIT",
-  "repository": "https://github.com/klday/logseq-coding-cli-monitor.git",
-  "repo": "klday/logseq-coding-cli-monitor",
+  "repository": "https://github.com/Day-in-the-Country-LLC/logseq-coding-cli-monitor.git",
+  "repo": "Day-in-the-Country-LLC/logseq-coding-cli-monitor",
   "effect": true,
   "keywords": [
     "logseq",
