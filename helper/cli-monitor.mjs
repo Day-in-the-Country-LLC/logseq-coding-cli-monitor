@@ -10,10 +10,10 @@ const DATA_DIR = path.join(HOME, ".coding-cli-monitor");
 const STATE_FILE = path.join(DATA_DIR, "state.json");
 const LOG_DIR = path.join(DATA_DIR, "logs");
 const PORT = 31274;
+const LOG_TAIL_BYTES = 64 * 1024;
 const CLIS = ["claude", "codex", "opencode"];
 const ATTENTION_RE = /(press enter|continue\?|approve|permission|confirm|y\/n|select|choose|do you want|waiting for|input required|requires approval|need[s]? attention)/i;
 const WORKING_RE = /\b(working|thinking|analyzing|reading|editing|searching|running tool|running command|applying patch|executing|processing)\b/i;
-const WORKING_IDLE_MS = 12000;
 const ATTENTION_HOLD_MS = 15000;
 const IDLE_ATTENTION_MS = 15000;
 
@@ -112,7 +112,7 @@ async function detectedProcesses() {
 }
 
 async function statusPayload(external = null) {
-  const state = readState();
+  const state = refreshActiveSessionStatuses(readState());
   const now = Date.now();
   const sessions = Object.values(state.sessions || {})
     .filter((session) => !["finished", "failed"].includes(session.status))
@@ -139,8 +139,9 @@ function effectiveSessionStatus(session, now = Date.now()) {
   if (session.status === "attention") return "attention";
 
   const lastActivityAt = Math.max(
+    timestampMs(session.lastScreenChangeAt),
     timestampMs(session.lastMeaningfulOutputAt),
-    timestampMs(session.lastUserInputAt),
+    timestampMs(session.lastWorkStartedAt),
     timestampMs(session.startedAt),
   );
 
@@ -149,6 +150,79 @@ function effectiveSessionStatus(session, now = Date.now()) {
   }
 
   return "working";
+}
+
+function readTail(filePath, maxBytes = LOG_TAIL_BYTES) {
+  try {
+    const stats = fs.statSync(filePath);
+    if (!stats.size) return "";
+    const length = Math.min(stats.size, maxBytes);
+    const buffer = Buffer.alloc(length);
+    const fd = fs.openSync(filePath, "r");
+    try {
+      fs.readSync(fd, buffer, 0, length, stats.size - length);
+    } finally {
+      fs.closeSync(fd);
+    }
+    return buffer.toString("utf8");
+  } catch {
+    return "";
+  }
+}
+
+function screenSnapshotText(text) {
+  return stripControlChars(text)
+    .replace(/\r/g, "\n")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(-1200);
+}
+
+function refreshActiveSessionStatuses(state, now = Date.now()) {
+  let dirty = false;
+  state.sessions ||= {};
+
+  for (const [id, session] of Object.entries(state.sessions)) {
+    if (!session.logPath || ["finished", "failed"].includes(session.status)) continue;
+
+    const tail = readTail(session.logPath);
+    const cleanTail = stripControlChars(tail);
+    const snapshot = screenSnapshotText(tail);
+    const patch = {};
+
+    if (snapshot && snapshot !== session.lastScreenDigest) {
+      patch.lastScreenDigest = snapshot;
+      patch.lastScreenChangeAt = new Date(now).toISOString();
+    }
+
+    const screenChangedAt = Math.max(
+      timestampMs(patch.lastScreenChangeAt),
+      timestampMs(session.lastScreenChangeAt),
+      timestampMs(session.startedAt),
+    );
+
+    const nextStatus = ATTENTION_RE.test(cleanTail)
+      ? "attention"
+      : (screenChangedAt && now - screenChangedAt <= IDLE_ATTENTION_MS ? "working" : "attention");
+
+    if (nextStatus !== session.status) {
+      patch.status = nextStatus;
+      if (nextStatus === "attention") patch.lastAttentionAt = new Date(now).toISOString();
+      else patch.lastWorkingAt = new Date(now).toISOString();
+    }
+
+    if (Object.keys(patch).length) {
+      state.sessions[id] = {
+        ...session,
+        ...patch,
+        updatedAt: new Date(now).toISOString(),
+      };
+      dirty = true;
+    }
+  }
+
+  if (dirty) writeState(state);
+  return state;
 }
 
 async function daemon() {
@@ -261,18 +335,28 @@ function runWrapped(argv) {
   updateSession(id, { pid: child.pid });
 
   let lastAttention = 0;
-  let lastWorking = 0;
   let lastOutputStateUpdate = 0;
   let lastMeaningfulOutputStateUpdate = 0;
-  let currentStatus = "working";
-  const workingIdleTimer = setInterval(() => {
-    if (lastWorking && Date.now() - lastWorking > WORKING_IDLE_MS) {
-      lastWorking = 0;
-      if (currentStatus !== "attention") {
-        updateSession(id, { status: "working" });
-      }
+  let lastActivity = Date.now();
+  let currentStatus = "attention";
+  updateSession(id, { status: "attention", lastAttentionAt: startedAt });
+
+  const idleTimer = setInterval(() => {
+    if (currentStatus === "working" && Date.now() - lastActivity > IDLE_ATTENTION_MS) {
+      currentStatus = "attention";
+      updateSession(id, { status: "attention", lastAttentionAt: new Date().toISOString() });
     }
   }, 5000);
+
+  function markWorking(patch = {}) {
+    const now = Date.now();
+    lastActivity = now;
+    currentStatus = "working";
+    updateSession(id, {
+      status: "working",
+      ...patch,
+    });
+  }
 
   function handleOutput(buffer, output) {
     output.write(buffer);
@@ -283,27 +367,26 @@ function runWrapped(argv) {
     }
     if (hasMeaningfulOutput(buffer) && now - lastMeaningfulOutputStateUpdate > 2000) {
       lastMeaningfulOutputStateUpdate = now;
-      currentStatus = "working";
-      updateSession(id, {
-        status: "working",
+      markWorking({
         lastMeaningfulOutputAt: new Date(now).toISOString(),
       });
     }
     const chunk = stripControlChars(buffer.toString("utf8"));
     if (ATTENTION_RE.test(chunk) && now - lastAttention > 60000) {
       lastAttention = now;
-      lastWorking = 0;
       currentStatus = "attention";
       updateSession(id, { status: "attention", lastAttentionAt: new Date(now).toISOString() });
       addEvent("attention", `${name || command} may need attention`, { sessionId: id, cli: command, name });
       return;
     }
-    if (WORKING_RE.test(chunk)) {
+    if (currentStatus !== "working" && WORKING_RE.test(chunk)) {
       if (currentStatus === "attention" && now - lastAttention < ATTENTION_HOLD_MS) {
         return;
       }
-      lastWorking = now;
-      updateSession(id, { lastWorkingAt: new Date(now).toISOString() });
+      markWorking({
+        lastWorkStartedAt: new Date(now).toISOString(),
+        lastWorkingAt: new Date(now).toISOString(),
+      });
     }
   }
 
@@ -311,7 +394,7 @@ function runWrapped(argv) {
   child.stderr.on("data", (buffer) => handleOutput(buffer, process.stderr));
 
   child.on("exit", (code, signal) => {
-    clearInterval(workingIdleTimer);
+    clearInterval(idleTimer);
     const exitCode = code ?? null;
     const status = exitCode === 0 ? "finished" : "failed";
     updateSession(id, { status, exitCode, signal, finishedAt: new Date().toISOString() });
