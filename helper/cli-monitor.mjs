@@ -15,6 +15,7 @@ const ATTENTION_RE = /(press enter|continue\?|approve|permission|confirm|y\/n|se
 const WORKING_RE = /\b(working|thinking|analyzing|reading|editing|searching|running tool|running command|applying patch|executing|processing)\b/i;
 const WORKING_IDLE_MS = 12000;
 const ATTENTION_HOLD_MS = 15000;
+const IDLE_ATTENTION_MS = 30000;
 
 function ensureDirs() {
   fs.mkdirSync(LOG_DIR, { recursive: true });
@@ -112,11 +113,12 @@ async function detectedProcesses() {
 
 async function statusPayload(external = null) {
   const state = readState();
+  const now = Date.now();
   const sessions = Object.values(state.sessions || {})
     .filter((session) => !["finished", "failed"].includes(session.status))
     .map((session) => ({
       ...session,
-      status: session.status === "attention" ? "attention" : "working",
+      status: effectiveSessionStatus(session, now),
     }));
   return {
     ok: true,
@@ -126,6 +128,28 @@ async function statusPayload(external = null) {
     external: external || await detectedProcesses(),
     events: state.events || [],
   };
+}
+
+function timestampMs(value) {
+  const time = value ? Date.parse(value) : 0;
+  return Number.isFinite(time) ? time : 0;
+}
+
+function effectiveSessionStatus(session, now = Date.now()) {
+  if (session.status === "attention") return "attention";
+
+  const lastActivityAt = Math.max(
+    timestampMs(session.lastOutputAt),
+    timestampMs(session.lastWorkingAt),
+    timestampMs(session.updatedAt),
+    timestampMs(session.startedAt),
+  );
+
+  if (lastActivityAt && now - lastActivityAt > IDLE_ATTENTION_MS) {
+    return "attention";
+  }
+
+  return "working";
 }
 
 async function daemon() {
@@ -217,6 +241,7 @@ function runWrapped(argv) {
 
   let lastAttention = 0;
   let lastWorking = 0;
+  let lastOutputStateUpdate = 0;
   let currentStatus = "working";
   const workingIdleTimer = setInterval(() => {
     if (lastWorking && Date.now() - lastWorking > WORKING_IDLE_MS) {
@@ -229,22 +254,27 @@ function runWrapped(argv) {
 
   function handleOutput(buffer, output) {
     output.write(buffer);
+    const now = Date.now();
+    if (now - lastOutputStateUpdate > 2000) {
+      lastOutputStateUpdate = now;
+      updateSession(id, { lastOutputAt: new Date(now).toISOString() });
+    }
     const chunk = stripControlChars(buffer.toString("utf8"));
-    if (ATTENTION_RE.test(chunk) && Date.now() - lastAttention > 60000) {
-      lastAttention = Date.now();
+    if (ATTENTION_RE.test(chunk) && now - lastAttention > 60000) {
+      lastAttention = now;
       lastWorking = 0;
       currentStatus = "attention";
-      updateSession(id, { status: "attention", lastAttentionAt: new Date().toISOString() });
+      updateSession(id, { status: "attention", lastAttentionAt: new Date(now).toISOString() });
       addEvent("attention", `${name || command} may need attention`, { sessionId: id, cli: command, name });
       return;
     }
     if (WORKING_RE.test(chunk)) {
-      if (currentStatus === "attention" && Date.now() - lastAttention < ATTENTION_HOLD_MS) {
+      if (currentStatus === "attention" && now - lastAttention < ATTENTION_HOLD_MS) {
         return;
       }
       currentStatus = "working";
-      lastWorking = Date.now();
-      updateSession(id, { status: "working", lastWorkingAt: new Date().toISOString() });
+      lastWorking = now;
+      updateSession(id, { status: "working", lastWorkingAt: new Date(now).toISOString() });
     }
   }
 
