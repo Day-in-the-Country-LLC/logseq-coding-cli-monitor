@@ -4,6 +4,8 @@ Monitor wrapped coding CLI sessions from Logseq and surface whether they are wor
 
 The plugin adds a dock inside Logseq plus a movable setup/status panel from the `/CLI Monitor` command. A small local helper watches wrapped CLI sessions and exposes status to the plugin at `http://127.0.0.1:31274/status`.
 
+![Coding CLI Monitor screenshot](./docs/marketplace-screenshot.png)
+
 ## Features
 
 - Shows active wrapped `codex`, `claude`, and `opencode` sessions in Logseq.
