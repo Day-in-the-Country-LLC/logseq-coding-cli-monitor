@@ -1,6 +1,6 @@
 {
   "name": "logseq-coding-cli-monitor",
-  "version": "v0.1.0",
+  "version": "v0.1.1",
   "title": "Coding CLI Monitor",
   "description": "Monitor coding CLIs and notify when they finish or need attention.",
   "author": "Kristin Day",

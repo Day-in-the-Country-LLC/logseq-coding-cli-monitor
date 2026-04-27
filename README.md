@@ -24,13 +24,15 @@ No Homebrew install is required for the Logseq plugin itself. Homebrew may be us
 
 ## Helper Usage
 
-Start the local daemon:
+The Logseq marketplace installs the plugin UI only. The wrapper/helper is included in the plugin folder, but Logseq does not install a global `cli-monitor` command.
+
+After installing the plugin, start the local daemon:
 
 ```sh
 node ~/.logseq/plugins/logseq-coding-cli-monitor/helper/cli-monitor.mjs daemon
 ```
 
-Run a wrapped coding CLI session:
+Then run wrapped coding CLI sessions:
 
 ```sh
 node ~/.logseq/plugins/logseq-coding-cli-monitor/helper/cli-monitor.mjs run --name "Issue 42" codex
@@ -49,6 +51,8 @@ npm link
 cli-monitor daemon
 cli-monitor run --name "Issue 42" codex
 ```
+
+If you see `EADDRINUSE` when starting the daemon, it means a monitor daemon is already running on `127.0.0.1:31274`.
 
 ## Logseq Commands
 
